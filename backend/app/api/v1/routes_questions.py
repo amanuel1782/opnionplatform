@@ -1,15 +1,25 @@
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from app.schemas.question import QuestionCreate, QuestionOut
-from app.models.question import Question
-from app.db.database import get_db
+from app.models.question_like import QuestionLike
+from app.models.answer import Answer
+from app.services.ai_summary import summarize_question_answers
 
-router = APIRouter()
+@router.get("/{question_id}/summary")
+def get_ai_summary(question_id: int, db: Session = Depends(get_db)):
+    summary = summarize_question_answers(db, question_id)
+    return {"summary": summary}
+@router.get("/{question_id}/details")
+def get_question_details(question_id: int, db: Session = Depends(get_db)):
+    q = db.query(Question).filter(Question.id == question_id).first()
+    if not q:
+        raise HTTPException(404, "Question not found")
 
-@router.post("/", response_model=QuestionOut)
-def create_question(data: QuestionCreate, db: Session = Depends(get_db)):
-    q = Question(content=data.content, user_id=1)  # temporary: user_id=1 for now
-    db.add(q)
-    db.commit()
-    db.refresh(q)
-    return q
+    answer_count = db.query(Answer).filter(Answer.question_id == question_id).count()
+    like_count = db.query(QuestionLike).filter(QuestionLike.question_id == question_id).count()
+
+    return {
+        "id": q.id,
+        "title": q.title,
+        "content": q.content,
+        "created_at": q.created_at,
+        "answer_count": answer_count,
+        "likes": like_count
+    }
