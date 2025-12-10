@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, ForeignKey
+from sqlalchemy.orm import relationship
 from app.db.database import Base
 
 class QuestionLike(Base):
@@ -7,3 +8,6 @@ class QuestionLike(Base):
     id = Column(Integer, primary_key=True)
     question_id = Column(Integer, ForeignKey("questions.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
+
+    question = relationship("Question", back_populates="likes")
+    user = relationship("User", back_populates="question_likes")

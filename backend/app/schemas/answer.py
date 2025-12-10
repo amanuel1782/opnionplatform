@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 
-class AnswerBase(BaseModel):
+class AnswerCreate(BaseModel):
     content: str
     anonymous: int
 
@@ -9,8 +9,10 @@ class AnswerOut(BaseModel):
     id: int
     content: str
     anonymous: int
-    user_id: int | None
     created_at: datetime
+    written_by: str | None
+    likes: int
+    comments: int
 
     class Config:
         orm_mode = True

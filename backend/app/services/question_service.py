@@ -3,6 +3,24 @@ from app.crud.crud_question import get_question
 from app.crud.crud_answer import get_answers_by_question
 
 def get_question_with_stats(db: Session, question_id: int):
+    question = db.query(Question).filter(Question.id == question_id).first()
+    if not question:
+        return None
+
+    share_url = f"https://yourfrontend.com/questions/{question.id}"
+
+    return QuestionOut(
+        id=question.id,
+        title=question.title,
+        content=question.content,
+        created_at=question.created_at,
+        user=question.user,
+        answers=question.answers,
+        like_count=question.like_count,
+        answer_count=len(question.answers),
+        share_url=share_url,
+    )
+
     question = get_question(db, question_id)
     if not question:
         return None
