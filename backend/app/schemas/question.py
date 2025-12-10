@@ -9,6 +9,7 @@ class QuestionOut(BaseModel):
     title: str
     content: str
     created_at: datetime
+    anonymous: int
     user: UserOut
     answers: List[AnswerOut]
     like_count: int

@@ -20,7 +20,7 @@ def get_full_question(
 ):
     q = (
         db.query(Question)
-        .options(joinedload(Question.user))  # load author
+        .options(joinedload(Question.user)) 
         .filter(Question.id == question_id)
         .first()
     )
@@ -28,7 +28,10 @@ def get_full_question(
     if not q:
         raise HTTPException(404, "Question not found")
 
-    # ---- Question stats ----
+
+    # ---------------------------------------------------------
+    # QUESTION STATS
+    # ---------------------------------------------------------
     total_likes = db.query(func.count(QuestionLike.id)).filter(
         QuestionLike.question_id == question_id
     ).scalar()
@@ -37,7 +40,10 @@ def get_full_question(
         Answer.question_id == question_id
     ).scalar()
 
-    # ---- Paginated answers ----
+
+    # ---------------------------------------------------------
+    # PAGINATED ANSWERS
+    # ---------------------------------------------------------
     answers = (
         db.query(Answer)
         .options(joinedload(Answer.user))
@@ -50,7 +56,10 @@ def get_full_question(
 
     answer_ids = [a.id for a in answers]
 
-    # ---- Batch fetch likes & comments counts ----
+
+    # ---------------------------------------------------------
+    # BULK FETCH LIKES & COMMENTS (FAST!)
+    # ---------------------------------------------------------
     like_map = dict(
         db.query(AnswerLike.answer_id, func.count())
         .filter(AnswerLike.answer_id.in_(answer_ids))
@@ -65,6 +74,10 @@ def get_full_question(
         .all()
     )
 
+
+    # ---------------------------------------------------------
+    # FORMAT ANSWERS
+    # ---------------------------------------------------------
     answer_list = []
     for a in answers:
         answer_list.append({
@@ -77,15 +90,22 @@ def get_full_question(
             "comments": comment_map.get(a.id, 0)
         })
 
+
+    # ---------------------------------------------------------
+    # FINAL RESPONSE
+    # ---------------------------------------------------------
     return {
         "id": q.id,
         "title": q.title,
         "content": q.content,
+        "anonymous": q.anonymous,
+        "asked_by": "Anonymous" if q.anonymous else (q.user.username if q.user else None),
         "created_at": q.created_at,
-        "asked_by": q.user.username if q.user else None,
+
         "likes": total_likes,
         "answers_total": total_answers,
+
         "answers_page": page,
         "answers_page_size": page_size,
-        "answers": answer_list,
+        "answers": answer_list
     }
