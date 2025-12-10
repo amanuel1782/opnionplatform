@@ -1,12 +1,24 @@
+from sqlalchemy.orm import Session
 from app.models.answer import Answer
-from app.core.openai_client import ai
+import openai   # or your AI provider
 
-def summarize_question_answers(db, question_id):
+def summarize_question_answers(db: Session, question_id: int):
     answers = db.query(Answer).filter(Answer.question_id == question_id).all()
-    text_data = "\n".join(a.content for a in answers)
+    combined = "\n".join([f"- {a.content}" for a in answers])
 
-    if not text_data.strip():
-        return "No answers available to summarize."
+    if not combined:
+        return "No answers yet."
 
-    summary = ai.summarize(text_data)
-    return summary
+    prompt = (
+        "Summarize the following answers:\n"
+        f"{combined}\n\n"
+        "Provide a concise summary:"
+    )
+
+    # Replace with your provider
+    response = openai.ChatCompletion.create(
+        model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response["choices"][0]["message"]["content"]
