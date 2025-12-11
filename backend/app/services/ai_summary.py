@@ -1,24 +1,31 @@
-from sqlalchemy.orm import Session
-from app.models.answer import Answer
-import openai   # or your AI provider
+# app/services/ai_summary_service.py
+import os
+from typing import List
+import logging
 
-def summarize_question_answers(db: Session, question_id: int):
-    answers = db.query(Answer).filter(Answer.question_id == question_id).all()
-    combined = "\n".join([f"- {a.content}" for a in answers])
+LOG = logging.getLogger("ai_summary")
 
-    if not combined:
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
+
+def summarize_question_answers(title: str, content: str, answers: List[str]) -> str:
+    """
+    Simple summary aggregator. If OPENAI_API_KEY is set, you can expand this
+    to call the OpenAI/other LLM. For now we provide a safe fallback summary.
+    """
+    if not answers:
         return "No answers yet."
 
-    prompt = (
-        "Summarize the following answers:\n"
-        f"{combined}\n\n"
-        "Provide a concise summary:"
-    )
+    # Basic heuristic summary: show top 3 answers (by length) plus short merge
+    best = sorted(answers, key=len, reverse=True)[:3]
+    summary = f"Question: {title}\n\n"
+    summary += "Summary of top answers:\n"
+    for i, a in enumerate(best, 1):
+        # trim to 300 chars
+        text = a if len(a) <= 300 else a[:297] + "..."
+        summary += f"{i}. {text}\n\n"
 
-    # Replace with your provider
-    response = openai.ChatCompletion.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # Optionally, you could call an LLM here if configured
+    if OPENAI_API_KEY:
+        LOG.info("OPENAI_API_KEY set: call external LLM here (not implemented).")
 
-    return response["choices"][0]["message"]["content"]
+    return summary

@@ -1,14 +1,14 @@
+# models/comment_share.py
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.sql import func
 from app.db.database import Base
 
-
-class QuestionReport(Base):
-    __tablename__ = "question_reports"
+class CommentShare(Base):
+    __tablename__ = "comment_shares"
 
     id = Column(Integer, primary_key=True)
-    question_id = Column(Integer, ForeignKey("questions.id"))
+    comment_id = Column(Integer, ForeignKey("comments.id"))
     user_id = Column(Integer, ForeignKey("users.id"))
-    reason = Column(String)
+    platform = Column(String)
 
     created_at = Column(DateTime, server_default=func.now())

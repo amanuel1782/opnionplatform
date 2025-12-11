@@ -1,0 +1,17 @@
+from sqlalchemy import Column, Integer, String, JSON, DateTime, ForeignKey
+from sqlalchemy.sql import func
+from app.db.database import Base
+
+
+class ContentAnalysisLog(Base):
+    __tablename__ = "content_analysis_logs"
+
+    id = Column(Integer, primary_key=True)
+
+    content_type = Column(String)  # question / answer / comment
+    content_id = Column(Integer)
+
+    analysis_type = Column(String)  # summary, sentiment, toxicity, etc.
+    result = Column(JSON)
+
+    created_at = Column(DateTime, server_default=func.now())

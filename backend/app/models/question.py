@@ -1,7 +1,8 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.db.database import Base
+
 
 class Question(Base):
     __tablename__ = "questions"
@@ -9,14 +10,25 @@ class Question(Base):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String)
     content = Column(String)
+
     user_id = Column(Integer, ForeignKey("users.id"))
+    anonymous = Column(Boolean, default=False)
+
+    views = Column(Integer, default=0)
+    share_count = Column(Integer, default=0)
+
+    status = Column(String, default="active")  # active, closed, flagged
+    is_deleted = Column(Boolean, default=False)
+
     created_at = Column(DateTime, server_default=func.now())
-    anonymous = Column(Integer, default=1)  # 1 = anonymous, 0 = named
+    updated_at = Column(DateTime, onupdate=func.now())
+
     # Relationships
     user = relationship("User", back_populates="questions")
-    answers = relationship("Answer", back_populates="question", cascade="all, delete-orphan")
-    likes = relationship("QuestionLike", back_populates="question", cascade="all, delete-orphan")
-    reports = relationship("QuestionReport", back_populates="question", cascade="all, delete-orphan")
+    answers = relationship("Answer", back_populates="question", cascade="all, delete")
+    likes = relationship("QuestionLike", cascade="all, delete")
+    reports = relationship("QuestionReport", cascade="all, delete")
+    comments = relationship("Comment", back_populates="question", cascade="all, delete")
 
     @property
     def like_count(self):

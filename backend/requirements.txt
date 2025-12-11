@@ -1,6 +1,15 @@
 fastapi
-uvicorn
-sqlalchemy
+uvicorn[standard]
+SQLAlchemy>=1.4
 pydantic
-python-jose
-passlib[bcrypt]
+alembic  # optional for migrations
+python-dotenv
+httpx
+typing-extensions
+fastapi
+uvicorn[standard]
+SQLAlchemy>=1.4
+pydantic
+httpx
+python-dotenv
+typing-extensions

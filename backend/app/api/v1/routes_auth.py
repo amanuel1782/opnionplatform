@@ -25,3 +25,4 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid credentials")
     token = create_access_token({"user_id": user.id})
     return TokenResponse(access_token=token)
+# app/auth.py
