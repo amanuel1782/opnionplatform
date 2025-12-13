@@ -10,6 +10,7 @@ class CommentOut(BaseModel):
     user_id: Optional[int]
     created_at: datetime
     likes: int
+    dislikes: int
     reports: int
     shares: int
     comments: List['CommentOut'] = []  # recursive
@@ -24,6 +25,7 @@ class AnswerOut(BaseModel):
     user_id: Optional[int]
     created_at: datetime
     likes: int
+    dislikes: int
     reports: int
     shares: int
     comments_count: int

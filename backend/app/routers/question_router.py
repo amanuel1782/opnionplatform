@@ -1,160 +1,439 @@
-# app/routes/questions.py
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from sqlalchemy.orm import Session, joinedload
+# app/routers/questions.py
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional
+from datetime import datetime
 
-from app.core.database import get_db
-from app.core.auth_stub import get_current_user_id
+from app.db.database import get_db
 from app.models.question import Question
+from app.models.question_like import QuestionLike
+from app.models.question_dislike import QuestionDislike
+from app.models.question_report import QuestionReport
+from app.models.question_share import QuestionShare
 from app.models.answer import Answer
 from app.models.comment import Comment
-from app.models.question_like import QuestionLike
-from app.models.answer_like import AnswerLike
-from app.models.report import Report
-from app.models.share import Share
-from app.schemas.question import QuestionCreate, QuestionUpdate
-from app.services.analytics import push_event, push_event_async
-from app.services.share import generate_share_token, build_share_url
+from app.models.event import Event
+from app.events.event_types import EventTypes
 
-router = APIRouter(prefix="/questions", tags=["questions"])
+router = APIRouter(prefix="/questions", tags=["Questions"])
 
+# ----------------------------
+# Generic Event Logger
+# ----------------------------
+def log_event(
+    db: Session,
+    actor_id: Optional[int],
+    actor_role: Optional[str],
+    event_type: str,
+    target_type: str,
+    target_id: int,
+    owner_id: Optional[int] = None,
+    owner_type: str = "user",
+    is_anonymous: bool = False,
+    metadata: Optional[dict] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None,
+    source: Optional[str] = None,
+    referrer: Optional[str] = None,
+    app_version: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    user_geo: Optional[str] = None,
+    latency_ms: Optional[float] = None,
+):
+    evt = Event(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        event_type=event_type,
+        target_type=target_type,
+        target_id=target_id,
+        owner_id=owner_id,
+        owner_type=owner_type,
+        is_anonymous=is_anonymous,
+        metadata=metadata or {},
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position,
+        source=source,
+        referrer=referrer,
+        app_version=app_version,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        user_geo=user_geo,
+        latency_ms=latency_ms
+    )
+    db.add(evt)
 
+# ----------------------------
+# CREATE QUESTION
+# ----------------------------
 @router.post("/", status_code=201)
-def create_question(payload: QuestionCreate, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
+def create_question(payload: dict, db: Session = Depends(get_db), user_id: int = 1):
+    anonymous = payload.get("anonymous", False)
     q = Question(
-        title=payload.title,
-        content=payload.content,
-        anonymous=payload.anonymous,
-        user_id=None if payload.anonymous else user_id
+        title=payload["title"],
+        content=payload.get("content", ""),
+        user_id=None if anonymous else user_id
     )
     db.add(q)
     db.commit()
     db.refresh(q)
-    if background_tasks:
-        background_tasks.add_task(push_event, "question.created", {"id": q.id, "user_id": user_id})
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_CREATED,
+        target_type="question",
+        target_id=q.id,
+        owner_id=q.user_id,
+        is_anonymous=anonymous,
+        metadata={"title": q.title}
+    )
+    db.commit()
     return {"id": q.id, "created_at": q.created_at}
 
-
+# ----------------------------
+# UPDATE QUESTION
+# ----------------------------
 @router.put("/{question_id}")
-def update_question(question_id: int, payload: QuestionUpdate, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    q = db.query(Question).filter(Question.id == question_id).first()
+def update_question(question_id: int, payload: dict, db: Session = Depends(get_db), user_id: int = 1):
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
     if not q:
         raise HTTPException(404, "Question not found")
     if q.user_id and q.user_id != user_id:
         raise HTTPException(403, "Not allowed")
-    if payload.title is not None:
-        q.title = payload.title
-    if payload.content is not None:
-        q.content = payload.content
-    if payload.anonymous is not None:
-        q.anonymous = payload.anonymous
-        q.user_id = None if payload.anonymous else q.user_id
+
+    changes = {}
+    if "title" in payload and payload["title"] != q.title:
+        changes["title"] = {"old": q.title, "new": payload["title"]}
+        q.title = payload["title"]
+    if "content" in payload and payload["content"] != q.content:
+        changes["content"] = {"old": q.content, "new": payload["content"]}
+        q.content = payload["content"]
+    if "anonymous" in payload:
+        old = q.user_id is None
+        q.user_id = None if payload["anonymous"] else user_id
+        changes["anonymous"] = {"old": old, "new": payload["anonymous"]}
+
     db.commit()
     db.refresh(q)
-    if background_tasks:
-        background_tasks.add_task(push_event, "question.updated", {"id": question_id, "user_id": user_id})
+
+    if changes:
+        log_event(
+            db,
+            actor_id=user_id,
+            actor_role="user",
+            event_type=EventTypes.QUESTION_EDITED,
+            target_type="question",
+            target_id=q.id,
+            owner_id=q.user_id,
+            is_anonymous=q.user_id is None,
+            metadata=changes
+        )
+        db.commit()
+
     return {"message": "updated", "updated_at": q.updated_at}
 
-
+# ----------------------------
+# DELETE QUESTION (soft delete)
+# ----------------------------
 @router.delete("/{question_id}")
-def delete_question(question_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    q = db.query(Question).filter(Question.id == question_id).first()
+def delete_question(question_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
     if not q:
         raise HTTPException(404, "Question not found")
     if q.user_id and q.user_id != user_id:
         raise HTTPException(403, "Not allowed")
-    db.delete(q)
+
+    q.deleted_at = datetime.utcnow()
     db.commit()
-    if background_tasks:
-        background_tasks.add_task(push_event, "question.deleted", {"id": question_id, "user_id": user_id})
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_DELETED,
+        target_type="question",
+        target_id=q.id,
+        owner_id=q.user_id,
+        is_anonymous=q.user_id is None,
+        metadata={"title": q.title}
+    )
+    db.commit()
     return {"message": "deleted"}
 
-
+# ----------------------------
+# LIKE QUESTION
+# ----------------------------
 @router.post("/{question_id}/like")
-def toggle_like(question_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    ex = db.query(QuestionLike).filter(QuestionLike.question_id == question_id, QuestionLike.user_id == user_id).first()
-    if ex:
-        db.delete(ex); db.commit()
-        likes = db.query(func.count(QuestionLike.id)).filter(QuestionLike.question_id == question_id).scalar()
-        if background_tasks: background_tasks.add_task(push_event, "question.unliked", {"id": question_id, "user_id": user_id})
-        return {"liked": False, "likes": likes}
-    like = QuestionLike(question_id=question_id, user_id=user_id)
-    db.add(like); db.commit()
-    likes = db.query(func.count(QuestionLike.id)).filter(QuestionLike.question_id == question_id).scalar()
-    if background_tasks: background_tasks.add_task(push_event, "question.liked", {"id": question_id, "user_id": user_id})
-    return {"liked": True, "likes": likes}
+def like_question(question_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
+    if not q:
+        raise HTTPException(404, "Question not found")
+    if db.query(QuestionLike).filter_by(question_id=question_id, user_id=user_id).first():
+        raise HTTPException(400, "Already liked")
 
+    db.add(QuestionLike(question_id=question_id, user_id=user_id))
+    db.commit()
 
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_LIKED,
+        target_type="question",
+        target_id=question_id,
+        owner_id=q.user_id,
+        is_anonymous=False
+    )
+    db.commit()
+    return {"liked": True}
+
+# ----------------------------
+# DISLIKE QUESTION
+# ----------------------------
+@router.post("/{question_id}/dislike")
+def dislike_question(question_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
+    if not q:
+        raise HTTPException(404, "Question not found")
+    if db.query(QuestionDislike).filter_by(question_id=question_id, user_id=user_id).first():
+        raise HTTPException(400, "Already disliked")
+
+    db.add(QuestionDislike(question_id=question_id, user_id=user_id))
+    db.commit()
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_DISLIKED,
+        target_type="question",
+        target_id=question_id,
+        owner_id=q.user_id,
+        is_anonymous=False
+    )
+    db.commit()
+    return {"disliked": True}
+
+# ----------------------------
+# REPORT QUESTION
+# ----------------------------
 @router.post("/{question_id}/report")
-def report_question(question_id: int, reason: Optional[str] = Query(None, max_length=300), db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    r = Report(content_type="question", content_id=question_id, reason=reason, user_id=user_id)
-    db.add(r); db.commit()
-    if background_tasks: background_tasks.add_task(push_event, "question.reported", {"id": question_id, "user_id": user_id})
+def report_question(question_id: int, reason: str = Query(...), db: Session = Depends(get_db), user_id: int = 1):
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
+    if not q:
+        raise HTTPException(404, "Question not found")
+
+    db.add(QuestionReport(question_id=question_id, user_id=user_id, reason=reason))
+    db.commit()
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_REPORTED,
+        target_type="question",
+        target_id=question_id,
+        owner_id=q.user_id,
+        is_anonymous=False,
+        metadata={"reason": reason}
+    )
+    db.commit()
     return {"message": "reported"}
 
+# ----------------------------
+# SHARE QUESTION
+# ----------------------------
+@router.post("/{question_id}/share")
+def share_question(question_id: int, platform: Optional[str] = None, db: Session = Depends(get_db), user_id: int = 1):
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
+    if not q:
+        raise HTTPException(404, "Question not found")
 
-@router.get("/{question_id}/share")
-def share_question(question_id: int, db: Session = Depends(get_db)):
-    q = db.query(Question).filter(Question.id == question_id).first()
-    if not q: raise HTTPException(404, "Question not found")
-    token = generate_share_token("question", question_id)
-    url = build_share_url("question", question_id, token)
-    # optional: persist Share model
-    s = Share(entity_type="question", entity_id=question_id, token=token)
-    db.add(s); db.commit()
-    return {"share_url": url}
+    db.add(QuestionShare(question_id=question_id, user_id=user_id, platform=platform))
+    db.commit()
 
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_SHARED,
+        target_type="question",
+        target_id=question_id,
+        owner_id=q.user_id,
+        is_anonymous=False,
+        metadata={"platform": platform}
+    )
+    db.commit()
+    return {"message": "shared"}
+
+# ----------------------------
+# Recursive comments helper
+# ----------------------------
+def _get_comment_recursive(db: Session, comment: Comment) -> dict:
+    children = db.query(Comment).filter(
+        Comment.target_type == "comment",
+        Comment.target_id == comment.id
+    ).all()
+
+    return {
+        "id": comment.id,
+        "body": comment.body,
+        "user_id": comment.user_id,
+        "is_anonymous": comment.is_anonymous,
+        "created_at": comment.created_at,
+        "comments": [_get_comment_recursive(db, c) for c in children]
+    }
 
 @router.get("/{question_id}/full")
-def get_question_full(question_id: int, page: int = 1, page_size: int = 10, db: Session = Depends(get_db)):
-    q = db.query(Question).options(joinedload(Question).joinedload(Question.answers)).filter(Question.id == question_id).first()
-    if not q: raise HTTPException(404, "Question not found")
-    total_likes = db.query(func.count(QuestionLike.id)).filter(QuestionLike.question_id == question_id).scalar()
-    total_answers = db.query(func.count(Answer.id)).filter(Answer.question_id == question_id).scalar()
-    answers = (
-        db.query(Answer)
-        .filter(Answer.question_id == question_id)
-        .order_by(Answer.created_at.desc())
-        .offset((page-1)*page_size)
-        .limit(page_size)
-        .all()
+def get_question_card(
+    question_id: int,
+    db: Session = Depends(get_db),
+    answers_page: int = 1,
+    answers_page_size: int = 10,
+    comments_page: int = 1,
+    comments_page_size: int = 10,
+    include_ai_summary: bool = False,
+    user_id: Optional[int] = None
+):
+    # Fetch question
+    q = db.query(Question).filter(Question.id == question_id, Question.deleted_at == None).first()
+    if not q:
+        raise HTTPException(404, "Question not found")
+
+    # ----------------------------
+    # Log VIEW event for question
+    # ----------------------------
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.QUESTION_VIEWED,
+        target_type="question",
+        target_id=q.id,
+        owner_id=q.user_id,
+        is_anonymous=q.user_id is None,
+        metadata={"answers_page": answers_page, "answers_page_size": answers_page_size}
     )
-    answer_ids = [a.id for a in answers] if answers else []
-    # batch counts
-    like_map = {}
-    if answer_ids:
-        rows = db.query(AnswerLike.answer_id, func.count()).filter(AnswerLike.answer_id.in_(answer_ids)).group_by(AnswerLike.answer_id).all()
-        like_map = {r[0]: r[1] for r in rows}
-    comment_map = {}
-    if answer_ids:
-        rows = db.query(func.count(Comment.id), Comment.answer_id).filter(Comment.answer_id.in_(answer_ids)).group_by(Comment.answer_id).all()
-        # rows are (count, answer_id)
-        comment_map = {r[1]: r[0] for r in rows}
-    answers_out = []
+    db.commit()
+
+    # ----------------------------
+    # Question engagement metrics
+    # ----------------------------
+    question_events = db.query(Event).filter(Event.target_type == "question", Event.target_id == question_id).all()
+    question_engagement_metrics = {
+        "total_events": len(question_events),
+        "likes_events": len([e for e in question_events if e.event_type == EventTypes.QUESTION_LIKED]),
+        "dislikes_events": len([e for e in question_events if e.event_type == EventTypes.QUESTION_DISLIKED]),
+        "reports_events": len([e for e in question_events if e.event_type == EventTypes.QUESTION_REPORTED]),
+        "shares_events": len([e for e in question_events if e.event_type == EventTypes.QUESTION_SHARED]),
+        "answers_events": len([e for e in question_events if e.event_type == EventTypes.ANSWER_CREATED]),
+        "comments_events": len([e for e in question_events if e.event_type.startswith("comment_")])
+    }
+
+    # ----------------------------
+    # Paginated answers with engagement metrics
+    # ----------------------------
+    ans_q = db.query(Answer).filter(Answer.question_id == question_id, Answer.deleted_at == None)
+    total_answers = ans_q.count()
+    answers = ans_q.order_by(Answer.created_at.desc()).offset((answers_page-1)*answers_page_size).limit(answers_page_size).all()
+
+    answer_ids = [a.id for a in answers]
+
+    # Batch engagement metrics per answer
+    from app.models.answer_like import AnswerLike
+    from app.models.answer_dislike import AnswerDislike
+    from app.models.answer_report import AnswerReport
+    from app.models.answer_share import AnswerShare
+
+    likes_map = dict(db.query(AnswerLike.answer_id, func.count()).filter(AnswerLike.answer_id.in_(answer_ids)).group_by(AnswerLike.answer_id).all())
+    dislikes_map = dict(db.query(AnswerDislike.answer_id, func.count()).filter(AnswerDislike.answer_id.in_(answer_ids)).group_by(AnswerDislike.answer_id).all())
+    reports_map = dict(db.query(AnswerReport.answer_id, func.count()).filter(AnswerReport.answer_id.in_(answer_ids)).group_by(AnswerReport.answer_id).all())
+    shares_map = dict(db.query(AnswerShare.answer_id, func.count()).filter(AnswerShare.answer_id.in_(answer_ids)).group_by(AnswerShare.answer_id).all())
+
+    # Nested comments helper
+    def _get_comment_recursive(db: Session, comment: Comment) -> dict:
+        children = db.query(Comment).filter(Comment.target_type == "comment", Comment.target_id == comment.id, Comment.deleted_at == None).all()
+        # Engagement metrics per comment
+        comment_events = db.query(Event).filter(Event.target_type == "comment", Event.target_id == comment.id).all()
+        comment_engagement_metrics = {
+            "total_events": len(comment_events),
+            "likes_events": len([e for e in comment_events if e.event_type == EventTypes.COMMENT_LIKED]),
+            "dislikes_events": len([e for e in comment_events if e.event_type == EventTypes.COMMENT_DISLIKED]),
+            "reports_events": len([e for e in comment_events if e.event_type == EventTypes.COMMENT_REPORTED]),
+            "shares_events": len([e for e in comment_events if e.event_type == EventTypes.COMMENT_SHARED])
+        }
+        return {
+            "id": comment.id,
+            "body": comment.body,
+            "user_id": comment.user_id,
+            "is_anonymous": comment.user_id is None,
+            "created_at": comment.created_at,
+            "engagement_metrics": comment_engagement_metrics,
+            "comments": [_get_comment_recursive(db, ch) for ch in children]
+        }
+
+    answers_data = []
     for a in answers:
-        answers_out.append({
+        answer_comments = db.query(Comment).filter(Comment.target_type == "answer", Comment.target_id == a.id, Comment.deleted_at == None).all()
+        nested_comments = [_get_comment_recursive(db, c) for c in answer_comments]
+
+        # Answer events
+        answer_events = db.query(Event).filter(Event.target_type == "answer", Event.target_id == a.id).all()
+        answer_engagement_metrics = {
+            "total_events": len(answer_events),
+            "likes_events": len([e for e in answer_events if e.event_type == EventTypes.ANSWER_LIKED]),
+            "dislikes_events": len([e for e in answer_events if e.event_type == EventTypes.ANSWER_DISLIKED]),
+            "reports_events": len([e for e in answer_events if e.event_type == EventTypes.ANSWER_REPORTED]),
+            "shares_events": len([e for e in answer_events if e.event_type == EventTypes.ANSWER_SHARED]),
+            "comments_events": len([e for e in answer_events if e.event_type.startswith("comment_")])
+        }
+
+        answers_data.append({
             "id": a.id,
-            "content": a.content,
-            "anonymous": a.anonymous,
-            "written_by": "Anonymous" if a.anonymous else (a.user.username if a.user else None),
-            "user_id": None if a.anonymous else a.user_id,
+            "body": a.content,
+            "user_id": None if a.user_id is None else a.user_id,
+            "is_anonymous": a.user_id is None,
             "created_at": a.created_at,
-            "likes": like_map.get(a.id, 0),
-            "comments": comment_map.get(a.id, 0)
+            "likes": likes_map.get(a.id, 0),
+            "dislikes": dislikes_map.get(a.id, 0),
+            "reports": reports_map.get(a.id, 0),
+            "shares": shares_map.get(a.id, 0),
+            "comments_count": len(nested_comments),
+            "comments": nested_comments,
+            "engagement_metrics": answer_engagement_metrics
         })
+
+    # ----------------------------
+    # Paginated question comments
+    # ----------------------------
+    question_comments_q = db.query(Comment).filter(Comment.target_type == "question", Comment.target_id == question_id, Comment.deleted_at == None)
+    total_q_comments = question_comments_q.count()
+    q_comments = question_comments_q.order_by(Comment.created_at.asc()).offset((comments_page-1)*comments_page_size).limit(comments_page_size).all()
+    comments_data = [_get_comment_recursive(db, c) for c in q_comments]
+
     return {
-        "id": q.id,
-        "title": q.title,
-        "content": q.content,
-        "anonymous": q.anonymous,
-        "asked_by": "Anonymous" if q.anonymous else (q.user.username if q.user else None),
-        "user_id": None if q.anonymous else q.user_id,
-        "created_at": q.created_at,
-        "updated_at": q.updated_at,
-        "likes": total_likes,
-        "answers_total": total_answers,
-        "answers_page": page,
-        "answers_page_size": page_size,
-        "answers": answers_out
+        "question": {
+            "id": q.id,
+            "title": q.title,
+            "body": q.content,
+            "user_id": None if q.user_id is None else q.user_id,
+            "is_anonymous": q.user_id is None,
+            "created_at": q.created_at,
+            "engagement_metrics": question_engagement_metrics
+        },
+        "answers": answers_data,
+        "comments": comments_data,
+        "total_answers": total_answers,
+        "answers_page": answers_page,
+        "answers_page_size": answers_page_size,
+        "total_comments": total_q_comments,
+        "comments_page": comments_page,
+        "comments_page_size": comments_page_size
     }

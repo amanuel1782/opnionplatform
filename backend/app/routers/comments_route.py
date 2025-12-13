@@ -171,3 +171,15 @@ def get_comments(
 
     results = [get_comment_with_nested(db, c) for c in comments]
     return results
+@router.post("/{comment_id}/dislike")
+def toggle_comment_dislike(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    from app.models.comment_dislike import CommentDislike
+    existing = db.query(CommentDislike).filter(CommentDislike.comment_id==comment_id, CommentDislike.user_id==user_id).first()
+    if existing:
+        db.delete(existing); db.commit()
+        dislikes = db.query(func.count(CommentDislike.id)).filter(CommentDislike.comment_id==comment_id).scalar()
+        return {"disliked": False, "dislikes": dislikes}
+    new = CommentDislike(comment_id=comment_id, user_id=user_id)
+    db.add(new); db.commit()
+    dislikes = db.query(func.count(CommentDislike.id)).filter(CommentDislike.comment_id==comment_id).scalar()
+    return {"disliked": True, "dislikes": dislikes}

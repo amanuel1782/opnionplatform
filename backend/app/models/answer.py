@@ -14,10 +14,13 @@ class Answer(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
 
     anonymous = Column(Boolean, default=False)
-
     is_accepted = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
 
+    # Counters
+    likes_count = Column(Integer, default=0)
+    dislikes_count = Column(Integer, default=0)
+    comments_count = Column(Integer, default=0)
     share_count = Column(Integer, default=0)
 
     created_at = Column(DateTime, server_default=func.now())
@@ -26,9 +29,14 @@ class Answer(Base):
     # Relationships
     question = relationship("Question", back_populates="answers")
     user = relationship("User", back_populates="answers")
-    likes = relationship("AnswerLike", cascade="all, delete")
-    reports = relationship("AnswerReport", cascade="all, delete")
-    comments = relationship("Comment", back_populates="answer", cascade="all, delete")
+
+    likes = relationship("AnswerLike", cascade="all, delete-orphan")
+    dislikes = relationship("AnswerDislike", cascade="all, delete-orphan")
+    reports = relationship("AnswerReport", cascade="all, delete-orphan")
+
+    # comments referencing this answer
+    comments = relationship("Comment", back_populates="answer", cascade="all, delete-orphan")
+
     @property
     def like_count(self):
         return len(self.likes)

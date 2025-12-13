@@ -16,23 +16,27 @@ class Question(Base):
 
     views = Column(Integer, default=0)
     share_count = Column(Integer, default=0)
-
     status = Column(String, default="active")  # active, closed, flagged
     is_deleted = Column(Boolean, default=False)
 
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
+    # Counters
+    likes_count = Column(Integer, default=0)
+    dislikes_count = Column(Integer, default=0)
+    comments_count = Column(Integer, default=0)
+    answers_count = Column(Integer, default=0)
+
     # Relationships
     user = relationship("User", back_populates="questions")
-    answers = relationship("Answer", back_populates="question", cascade="all, delete")
-    likes = relationship("QuestionLike", cascade="all, delete")
-    reports = relationship("QuestionReport", cascade="all, delete")
-    comments = relationship("Comment", back_populates="question", cascade="all, delete")
 
-    @property
-    def like_count(self):
-        return len(self.likes)
+    answers = relationship("Answer", back_populates="question", cascade="all, delete-orphan")
+    comments = relationship("Comment", back_populates="question", cascade="all, delete-orphan")
+
+    likes = relationship("QuestionLike", cascade="all, delete-orphan")
+    dislikes = relationship("QuestionDislike", cascade="all, delete-orphan")
+    reports = relationship("QuestionReport", cascade="all, delete-orphan")
 
     @property
     def report_count(self):

@@ -193,3 +193,15 @@ def get_answers_with_details(
         })
 
     return results
+@router.post("/{answer_id}/dislike")
+def toggle_answer_dislike(answer_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    from app.models.answer_dislike import AnswerDislike
+    existing = db.query(AnswerDislike).filter(AnswerDislike.answer_id==answer_id, AnswerDislike.user_id==user_id).first()
+    if existing:
+        db.delete(existing); db.commit()
+        dislikes = db.query(func.count(AnswerDislike.id)).filter(AnswerDislike.answer_id==answer_id).scalar()
+        return {"disliked": False, "dislikes": dislikes}
+    new = AnswerDislike(answer_id=answer_id, user_id=user_id)
+    db.add(new); db.commit()
+    dislikes = db.query(func.count(AnswerDislike.id)).filter(AnswerDislike.answer_id==answer_id).scalar()
+    return {"disliked": True, "dislikes": dislikes}

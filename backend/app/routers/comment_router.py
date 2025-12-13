@@ -1,97 +1,307 @@
-# app/routes/comments.py
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
+# app/routers/comments.py
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import Optional
+from datetime import datetime
 
-from app.core.database import get_db
-from app.core.auth_stub import get_current_user_id
+from app.db.database import get_db
 from app.models.comment import Comment
-from app.models.question import Question
-from app.models.answer import Answer
 from app.models.comment_like import CommentLike
-from app.models.report import Report
-from app.services.analytics import push_event
-from app.schemas.comment import CommentCreate, CommentUpdate
+from app.models.comment_dislike import CommentDislike
+from app.models.comment_report import CommentReport
+from app.models.comment_share import CommentShare
+from app.models.event import Event
+from app.events.event_types import EventTypes
 
-router = APIRouter(prefix="/comments", tags=["comments"])
+router = APIRouter(prefix="/comments", tags=["Comments"])
 
+# ----------------------------
+# EVENT LOGGER
+# ----------------------------
+def log_event(
+    db: Session,
+    actor_id: Optional[int],
+    actor_role: Optional[str],
+    event_type: str,
+    target_type: str,
+    target_id: int,
+    owner_id: Optional[int] = None,
+    owner_type: str = "user",
+    is_anonymous: bool = False,
+    metadata: Optional[dict] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None,
+    source: Optional[str] = None,
+    referrer: Optional[str] = None,
+    app_version: Optional[str] = None,
+    ip_address: Optional[str] = None,
+    user_agent: Optional[str] = None,
+    user_geo: Optional[str] = None,
+    latency_ms: Optional[float] = None,
+):
+    evt = Event(
+        actor_id=actor_id,
+        actor_role=actor_role,
+        event_type=event_type,
+        target_type=target_type,
+        target_id=target_id,
+        owner_id=owner_id,
+        owner_type=owner_type,
+        is_anonymous=is_anonymous,
+        metadata=metadata or {},
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position,
+        source=source,
+        referrer=referrer,
+        app_version=app_version,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        user_geo=user_geo,
+        latency_ms=latency_ms
+    )
+    db.add(evt)
 
-@router.post("/question/{question_id}", status_code=201)
-def add_question_comment(question_id: int, payload: CommentCreate, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    q = db.query(Question).filter(Question.id == question_id).first()
-    if not q: raise HTTPException(404, "Question not found")
-    c = Comment(content=payload.content, anonymous=payload.anonymous, user_id=None if payload.anonymous else user_id, question_id=question_id, parent_id=payload.parent_id)
-    db.add(c); db.commit(); db.refresh(c)
-    if background_tasks: background_tasks.add_task(push_event, "comment.created", {"id": c.id, "question_id": question_id})
-    return {"id": c.id, "created_at": c.created_at}
+# ----------------------------
+# CREATE COMMENT
+# ----------------------------
+@router.post("/", status_code=201)
+def create_comment(payload: dict, db: Session = Depends(get_db), user_id: int = 1):
+    anonymous = payload.get("anonymous", False)
+    c = Comment(
+        body=payload["content"],
+        user_id=None if anonymous else user_id,
+        target_type=payload["target_type"],
+        target_id=payload["target_id"]
+    )
+    db.add(c)
+    db.commit()
+    db.refresh(c)
 
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_CREATED,
+        target_type="comment",
+        target_id=c.id,
+        owner_id=c.user_id,
+        is_anonymous=anonymous,
+        metadata={"target_type": c.target_type, "target_id": c.target_id}
+    )
+    db.commit()
+    return c
 
-@router.post("/answer/{answer_id}", status_code=201)
-def add_answer_comment(answer_id: int, payload: CommentCreate, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    a = db.query(Answer).filter(Answer.id == answer_id).first()
-    if not a: raise HTTPException(404, "Answer not found")
-    c = Comment(content=payload.content, anonymous=payload.anonymous, user_id=None if payload.anonymous else user_id, answer_id=answer_id, parent_id=payload.parent_id)
-    db.add(c); db.commit(); db.refresh(c)
-    if background_tasks: background_tasks.add_task(push_event, "comment.created", {"id": c.id, "answer_id": answer_id})
-    return {"id": c.id, "created_at": c.created_at}
-
-
+# ----------------------------
+# EDIT COMMENT
+# ----------------------------
 @router.put("/{comment_id}")
-def update_comment(comment_id: int, payload: CommentUpdate, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    c = db.query(Comment).filter(Comment.id == comment_id).first()
-    if not c: raise HTTPException(404, "Comment not found")
-    if c.user_id and c.user_id != user_id: raise HTTPException(403, "Not allowed")
-    if payload.content is not None: c.content = payload.content
-    if payload.anonymous is not None:
-        c.anonymous = payload.anonymous
-        if payload.anonymous: c.user_id = None
-    db.commit(); db.refresh(c)
-    if background_tasks: background_tasks.add_task(push_event, "comment.updated", {"id": comment_id})
-    return {"message": "updated", "updated_at": c.updated_at}
+def edit_comment(comment_id: int, payload: dict, db: Session = Depends(get_db), user_id: int = 1):
+    c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
+    if c.user_id and c.user_id != user_id:
+        raise HTTPException(403, "Not allowed")
 
+    changes = {}
+    if "content" in payload and payload["content"] != c.body:
+        changes["content"] = {"old": c.body, "new": payload["content"]}
+        c.body = payload["content"]
 
+    if "anonymous" in payload:
+        old = c.user_id is None
+        c.user_id = None if payload["anonymous"] else user_id
+        changes["anonymous"] = {"old": old, "new": payload["anonymous"]}
+
+    db.commit()
+    db.refresh(c)
+
+    if changes:
+        log_event(
+            db,
+            actor_id=user_id,
+            actor_role="user",
+            event_type=EventTypes.COMMENT_EDITED,
+            target_type="comment",
+            target_id=c.id,
+            owner_id=c.user_id,
+            is_anonymous=c.user_id is None,
+            metadata=changes
+        )
+        db.commit()
+    return c
+
+# ----------------------------
+# DELETE COMMENT (soft delete)
+# ----------------------------
 @router.delete("/{comment_id}")
-def delete_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    c = db.query(Comment).filter(Comment.id == comment_id).first()
-    if not c: raise HTTPException(404, "Comment not found")
-    if c.user_id and c.user_id != user_id: raise HTTPException(403, "Not allowed")
-    db.delete(c); db.commit()
-    if background_tasks: background_tasks.add_task(push_event, "comment.deleted", {"id": comment_id})
+def delete_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
+    if c.user_id and c.user_id != user_id:
+        raise HTTPException(403, "Not allowed")
+
+    c.deleted_at = datetime.utcnow()
+    db.commit()
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_DELETED,
+        target_type="comment",
+        target_id=c.id,
+        owner_id=c.user_id,
+        is_anonymous=c.user_id is None,
+        metadata={"target_type": c.target_type, "target_id": c.target_id}
+    )
+    db.commit()
     return {"message": "deleted"}
 
-
+# ----------------------------
+# LIKE COMMENT
+# ----------------------------
 @router.post("/{comment_id}/like")
-def like_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    ex = db.query(CommentLike).filter(CommentLike.comment_id == comment_id, CommentLike.user_id == user_id).first()
-    if ex:
-        db.delete(ex); db.commit()
-        if background_tasks: background_tasks.add_task(push_event, "comment.unliked", {"id": comment_id, "user_id": user_id})
-        return {"liked": False}
-    like = CommentLike(comment_id=comment_id, user_id=user_id); db.add(like); db.commit()
-    if background_tasks: background_tasks.add_task(push_event, "comment.liked", {"id": comment_id, "user_id": user_id})
+def like_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
+
+    if db.query(CommentLike).filter_by(comment_id=comment_id, user_id=user_id).first():
+        raise HTTPException(400, "Already liked")
+
+    db.add(CommentLike(comment_id=comment_id, user_id=user_id))
+    db.commit()
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_LIKED,
+        target_type="comment",
+        target_id=comment_id,
+        owner_id=c.user_id,
+        is_anonymous=False
+    )
+    db.commit()
     return {"liked": True}
 
+# ----------------------------
+# DISLIKE COMMENT
+# ----------------------------
+@router.post("/{comment_id}/dislike")
+def dislike_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+    c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
 
+    if db.query(CommentDislike).filter_by(comment_id=comment_id, user_id=user_id).first():
+        raise HTTPException(400, "Already disliked")
+
+    db.add(CommentDislike(comment_id=comment_id, user_id=user_id))
+    db.commit()
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_DISLIKED,
+        target_type="comment",
+        target_id=comment_id,
+        owner_id=c.user_id,
+        is_anonymous=False
+    )
+    db.commit()
+    return {"disliked": True}
+
+# ----------------------------
+# REPORT COMMENT
+# ----------------------------
 @router.post("/{comment_id}/report")
-def report_comment(comment_id: int, reason: Optional[str] = Query(None, max_length=300), db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id), background_tasks: BackgroundTasks | None = None):
-    r = Report(content_type="comment", content_id=comment_id, reason=reason, user_id=user_id)
-    db.add(r); db.commit()
-    if background_tasks: background_tasks.add_task(push_event, "comment.reported", {"id": comment_id, "user_id": user_id})
+def report_comment(comment_id: int, reason: str = Query(...), db: Session = Depends(get_db), user_id: int = 1):
+    c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
+
+    db.add(CommentReport(comment_id=comment_id, user_id=user_id, reason=reason))
+    db.commit()
+
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_REPORTED,
+        target_type="comment",
+        target_id=comment_id,
+        owner_id=c.user_id,
+        is_anonymous=False,
+        metadata={"reason": reason}
+    )
+    db.commit()
     return {"message": "reported"}
 
+# ----------------------------
+# SHARE COMMENT
+# ----------------------------
+@router.post("/{comment_id}/share")
+def share_comment(comment_id: int, platform: Optional[str] = None, db: Session = Depends(get_db), user_id: int = 1):
+    c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not c:
+        raise HTTPException(404, "Comment not found")
 
-@router.get("/question/{question_id}")
-def list_question_comments(question_id: int, page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
-    q = db.query(Comment).filter(Comment.question_id == question_id)
-    total = q.count()
-    items = q.order_by(Comment.created_at.asc()).offset((page-1)*page_size).limit(page_size).all()
-    return {"total": total, "page": page, "page_size": page_size, "comments": items}
+    db.add(CommentShare(comment_id=comment_id, user_id=user_id, platform=platform))
+    db.commit()
 
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_SHARED,
+        target_type="comment",
+        target_id=comment_id,
+        owner_id=c.user_id,
+        is_anonymous=False,
+        metadata={"platform": platform}
+    )
+    db.commit()
+    return {"message": "shared"}
 
-@router.get("/answer/{answer_id}")
-def list_answer_comments(answer_id: int, page: int = 1, page_size: int = 20, db: Session = Depends(get_db)):
-    q = db.query(Comment).filter(Comment.answer_id == answer_id)
-    total = q.count()
-    items = q.order_by(Comment.created_at.asc()).offset((page-1)*page_size).limit(page_size).all()
-    return {"total": total, "page": page, "page_size": page_size, "comments": items}
+# ----------------------------
+# GET COMMENT THREAD (with nested children)
+# ----------------------------
+@router.get("/thread/{comment_id}")
+def get_comment_thread(comment_id: int, db: Session = Depends(get_db), user_id: Optional[int] = None):
+    root = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
+    if not root:
+        raise HTTPException(404, "Comment not found")
+
+    # Log view event
+    log_event(
+        db,
+        actor_id=user_id,
+        actor_role="user",
+        event_type=EventTypes.COMMENT_VIEWED,
+        target_type="comment",
+        target_id=comment_id,
+        owner_id=root.user_id,
+        is_anonymous=root.user_id is None
+    )
+    db.commit()
+
+    def build(c: Comment) -> dict:
+        children = db.query(Comment).filter(Comment.target_type == "comment", Comment.target_id == c.id, Comment.deleted_at == None).all()
+        return {
+            "id": c.id,
+            "body": c.body,
+            "user_id": c.user_id,
+            "is_anonymous": c.is_anonymous,
+            "created_at": c.created_at,
+            "comments": [build(ch) for ch in children]
+        }
+
+    return build(root)
