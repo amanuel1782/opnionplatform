@@ -1,7 +1,6 @@
 # app/routers/comments.py
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from typing import Optional
 from datetime import datetime
 
@@ -70,7 +69,15 @@ def log_event(
 # CREATE COMMENT
 # ----------------------------
 @router.post("/", status_code=201)
-def create_comment(payload: dict, db: Session = Depends(get_db), user_id: int = 1):
+def create_comment(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     anonymous = payload.get("anonymous", False)
     c = Comment(
         body=payload["content"],
@@ -91,7 +98,11 @@ def create_comment(payload: dict, db: Session = Depends(get_db), user_id: int = 
         target_id=c.id,
         owner_id=c.user_id,
         is_anonymous=anonymous,
-        metadata={"target_type": c.target_type, "target_id": c.target_id}
+        metadata={"target_type": c.target_type, "target_id": c.target_id},
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
     return c
@@ -100,7 +111,16 @@ def create_comment(payload: dict, db: Session = Depends(get_db), user_id: int = 
 # EDIT COMMENT
 # ----------------------------
 @router.put("/{comment_id}")
-def edit_comment(comment_id: int, payload: dict, db: Session = Depends(get_db), user_id: int = 1):
+def edit_comment(
+    comment_id: int,
+    payload: dict,
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not c:
         raise HTTPException(404, "Comment not found")
@@ -130,7 +150,11 @@ def edit_comment(comment_id: int, payload: dict, db: Session = Depends(get_db), 
             target_id=c.id,
             owner_id=c.user_id,
             is_anonymous=c.user_id is None,
-            metadata=changes
+            metadata=changes,
+            session_id=session_id,
+            request_id=request_id,
+            feed_id=feed_id,
+            position=position
         )
         db.commit()
     return c
@@ -139,7 +163,15 @@ def edit_comment(comment_id: int, payload: dict, db: Session = Depends(get_db), 
 # DELETE COMMENT (soft delete)
 # ----------------------------
 @router.delete("/{comment_id}")
-def delete_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+def delete_comment(
+    comment_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not c:
         raise HTTPException(404, "Comment not found")
@@ -158,7 +190,11 @@ def delete_comment(comment_id: int, db: Session = Depends(get_db), user_id: int 
         target_id=c.id,
         owner_id=c.user_id,
         is_anonymous=c.user_id is None,
-        metadata={"target_type": c.target_type, "target_id": c.target_id}
+        metadata={"target_type": c.target_type, "target_id": c.target_id},
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
     return {"message": "deleted"}
@@ -167,7 +203,15 @@ def delete_comment(comment_id: int, db: Session = Depends(get_db), user_id: int 
 # LIKE COMMENT
 # ----------------------------
 @router.post("/{comment_id}/like")
-def like_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+def like_comment(
+    comment_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not c:
         raise HTTPException(404, "Comment not found")
@@ -186,7 +230,11 @@ def like_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 
         target_type="comment",
         target_id=comment_id,
         owner_id=c.user_id,
-        is_anonymous=False
+        is_anonymous=False,
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
     return {"liked": True}
@@ -195,7 +243,15 @@ def like_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 
 # DISLIKE COMMENT
 # ----------------------------
 @router.post("/{comment_id}/dislike")
-def dislike_comment(comment_id: int, db: Session = Depends(get_db), user_id: int = 1):
+def dislike_comment(
+    comment_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not c:
         raise HTTPException(404, "Comment not found")
@@ -214,7 +270,11 @@ def dislike_comment(comment_id: int, db: Session = Depends(get_db), user_id: int
         target_type="comment",
         target_id=comment_id,
         owner_id=c.user_id,
-        is_anonymous=False
+        is_anonymous=False,
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
     return {"disliked": True}
@@ -223,7 +283,16 @@ def dislike_comment(comment_id: int, db: Session = Depends(get_db), user_id: int
 # REPORT COMMENT
 # ----------------------------
 @router.post("/{comment_id}/report")
-def report_comment(comment_id: int, reason: str = Query(...), db: Session = Depends(get_db), user_id: int = 1):
+def report_comment(
+    comment_id: int,
+    reason: str = Query(...),
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not c:
         raise HTTPException(404, "Comment not found")
@@ -240,7 +309,11 @@ def report_comment(comment_id: int, reason: str = Query(...), db: Session = Depe
         target_id=comment_id,
         owner_id=c.user_id,
         is_anonymous=False,
-        metadata={"reason": reason}
+        metadata={"reason": reason},
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
     return {"message": "reported"}
@@ -249,7 +322,16 @@ def report_comment(comment_id: int, reason: str = Query(...), db: Session = Depe
 # SHARE COMMENT
 # ----------------------------
 @router.post("/{comment_id}/share")
-def share_comment(comment_id: int, platform: Optional[str] = None, db: Session = Depends(get_db), user_id: int = 1):
+def share_comment(
+    comment_id: int,
+    platform: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user_id: int = 1,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     c = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not c:
         raise HTTPException(404, "Comment not found")
@@ -266,7 +348,11 @@ def share_comment(comment_id: int, platform: Optional[str] = None, db: Session =
         target_id=comment_id,
         owner_id=c.user_id,
         is_anonymous=False,
-        metadata={"platform": platform}
+        metadata={"platform": platform},
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
     return {"message": "shared"}
@@ -275,12 +361,19 @@ def share_comment(comment_id: int, platform: Optional[str] = None, db: Session =
 # GET COMMENT THREAD (with nested children)
 # ----------------------------
 @router.get("/thread/{comment_id}")
-def get_comment_thread(comment_id: int, db: Session = Depends(get_db), user_id: Optional[int] = None):
+def get_comment_thread(
+    comment_id: int,
+    db: Session = Depends(get_db),
+    user_id: Optional[int] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    feed_id: Optional[str] = None,
+    position: Optional[int] = None
+):
     root = db.query(Comment).filter(Comment.id == comment_id, Comment.deleted_at == None).first()
     if not root:
         raise HTTPException(404, "Comment not found")
 
-    # Log view event
     log_event(
         db,
         actor_id=user_id,
@@ -289,12 +382,20 @@ def get_comment_thread(comment_id: int, db: Session = Depends(get_db), user_id: 
         target_type="comment",
         target_id=comment_id,
         owner_id=root.user_id,
-        is_anonymous=root.user_id is None
+        is_anonymous=root.user_id is None,
+        session_id=session_id,
+        request_id=request_id,
+        feed_id=feed_id,
+        position=position
     )
     db.commit()
 
     def build(c: Comment) -> dict:
-        children = db.query(Comment).filter(Comment.target_type == "comment", Comment.target_id == c.id, Comment.deleted_at == None).all()
+        children = db.query(Comment).filter(
+            Comment.target_type == "comment",
+            Comment.target_id == c.id,
+            Comment.deleted_at == None
+        ).all()
         return {
             "id": c.id,
             "body": c.body,
